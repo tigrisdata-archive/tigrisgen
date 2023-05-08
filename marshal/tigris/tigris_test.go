@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/expr"
+	"github.com/tigrisdata/tigrisgen/expr"
 )
 
 func TestMarshalFilter(t *testing.T) {
@@ -39,6 +39,7 @@ func TestMarshalFilter(t *testing.T) {
 			expr.NewExpr(expr.Eq, expr.NewField("field1"), expr.NewConstant("value1")),
 			expr.NewExpr(expr.Eq, expr.NewField("field2"), expr.NewConstant("value2")),
 		), exp: `{"$or":[{"field1":"value1"},{"field2":"value2"}]}`},
+
 		{name: "and_or", flt: expr.And(
 			expr.NewExpr(expr.Eq, expr.NewField("field1"), expr.NewConstant("value1")),
 			expr.NewExpr(expr.Eq, expr.NewField("field2"), expr.NewConstant("value2")),
@@ -71,21 +72,27 @@ func TestMarshalUpdate(t *testing.T) {
 		upd  []expr.Expr
 		exp  string
 	}{
-		{name: "one", upd: []expr.Expr{
-			expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10))},
-			exp: `{$set:{{"field1":10}}}`,
+		{
+			name: "one", upd: []expr.Expr{
+				expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10)),
+			},
+			exp: `{"$set":{"field1":10}}`,
 		},
-		{name: "two", upd: []expr.Expr{
-			expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10)),
-			expr.NewExpr(expr.IncOp, expr.NewField("field2"), expr.NewArg("arg1"))},
-			exp: `{$set:{{"field1":10}}},{$increment:{{"field2":{{.arg1}}}}}`,
+		{
+			name: "two", upd: []expr.Expr{
+				expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10)),
+				expr.NewExpr(expr.IncOp, expr.NewField("field2"), expr.NewArg("arg1")),
+			},
+			exp: `{"$set":{"field1":10},"$increment":{"field2":{{toJSON .Arg.arg1}}}}`,
 		},
-		{name: "many", upd: []expr.Expr{
-			expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10)),
-			expr.NewExpr(expr.IncOp, expr.NewField("field2"), expr.NewArg("arg1")),
-			expr.NewExpr(expr.IncOp, expr.NewField("field2.subField"), expr.NewArg("arg2")),
-			expr.NewExpr(expr.SetOp, expr.NewField("field1.subField"), expr.NewConstant(20))},
-			exp: `{$set:{{"field1":10},{"field1.subField":20}}},{$increment:{{"field2":{{.arg1}}},{"field2.subField":{{.arg2}}}}}`,
+		{
+			name: "many", upd: []expr.Expr{
+				expr.NewExpr(expr.SetOp, expr.NewField("field1"), expr.NewConstant(10)),
+				expr.NewExpr(expr.IncOp, expr.NewField("field2"), expr.NewArg("arg1")),
+				expr.NewExpr(expr.IncOp, expr.NewField("field2.subField"), expr.NewArg("arg2")),
+				expr.NewExpr(expr.SetOp, expr.NewField("field1.subField"), expr.NewConstant(20)),
+			},
+			exp: `{"$set":{"field1":10,"field1.subField":20},"$increment":{"field2":{{toJSON .Arg.arg1}},"field2.subField":{{toJSON .Arg.arg2}}}}`,
 		},
 	}
 

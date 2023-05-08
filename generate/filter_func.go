@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package generate
 
 import (
 	"go/ast"
 	"go/types"
 
-	filter "github.com/tigrisdata/tigris-client-go/tigrisgen/marshal/tigris"
-
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/expr"
-
 	"github.com/rs/zerolog/log"
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/util"
-	"golang.org/x/tools/go/loader"
+	"github.com/tigrisdata/tigrisgen/expr"
+	filter "github.com/tigrisdata/tigrisgen/marshal/tigris"
+	"github.com/tigrisdata/tigrisgen/util"
+	"golang.org/x/tools/go/packages"
 )
 
 func (f *funcParser) parseIfStatement(stmt *ast.IfStmt) (expr.Expr, *expr.Expr) {
@@ -48,7 +46,7 @@ func (f *funcParser) parseIfStatement(stmt *ast.IfStmt) (expr.Expr, *expr.Expr) 
 		} else if x.Type == expr.Constant {
 			b, ok := x.Value.(bool)
 			if !ok {
-				FatalWithExpr(e, "unsupported constant in if")
+				FatalWithExpr(f.pi, e, "unsupported constant in if")
 			}
 			if b {
 				ifCond = expr.True
@@ -63,12 +61,12 @@ func (f *funcParser) parseIfStatement(stmt *ast.IfStmt) (expr.Expr, *expr.Expr) 
 		} else if x.Type == expr.Arg {
 			ifCond = expr.NewExpr(expr.Eq, x, expr.NewConstant(true)).Client()
 		} else {
-			FatalWithExpr(e, "unsupported select in if condition")
+			FatalWithExpr(f.pi, e, "unsupported select in if condition")
 		}
 	case *ast.UnaryExpr:
 		ifCond = f.parseUnaryNegation(e.X)
 	default:
-		FatalWithExpr(e, "unsupported statement if statement")
+		FatalWithExpr(f.pi, e, "unsupported statement if statement")
 	}
 
 	ifBody, ifBodyFallThrough := f.parseBlockStmt(stmt.Body)
@@ -82,6 +80,7 @@ func (f *funcParser) parseIfStatement(stmt *ast.IfStmt) (expr.Expr, *expr.Expr) 
 		}
 
 		b := expr.Or(expr.Negate(ifCond), *ifBodyFallThrough)
+
 		return ifExpr, &b
 	}
 
@@ -131,7 +130,7 @@ func (f *funcParser) parseBlockStmtLow(block []ast.Stmt) (expr.Expr, *expr.Expr)
 		switch e := v.(type) {
 		case *ast.ReturnStmt:
 			if i < len(block)-1 {
-				FatalWithExpr(block[i+1], "unreachable code")
+				FatalWithExpr(f.pi, block[i+1], "unreachable code")
 			}
 
 			return f.parseReturnStatement(e), nil
@@ -139,7 +138,7 @@ func (f *funcParser) parseBlockStmtLow(block []ast.Stmt) (expr.Expr, *expr.Expr)
 			ifExpr, ifFallThrough := f.parseIfStatement(e)
 
 			if ifFallThrough == nil && i < len(block)-1 {
-				FatalWithExpr(block[i+1], "unreachable code")
+				FatalWithExpr(f.pi, block[i+1], "unreachable code")
 			}
 
 			if ifFallThrough == nil {
@@ -161,11 +160,12 @@ func (f *funcParser) parseBlockStmtLow(block []ast.Stmt) (expr.Expr, *expr.Expr)
 
 			return blockExpr, nil
 		default:
-			FatalWithExpr(e, "unsupported block statement")
+			FatalWithExpr(f.pi, e, "unsupported block statement")
 		}
 	}
 
-	FatalWithExpr(nil, "unsupported block statement")
+	FatalWithExpr(f.pi, nil, "unsupported block statement")
+
 	return expr.Expr{}, &expr.Expr{}
 }
 
@@ -173,23 +173,27 @@ func (f *funcParser) parseBlockStmt(block *ast.BlockStmt) (expr.Expr, *expr.Expr
 	return f.parseBlockStmtLow(block.List)
 }
 
-func argToType(expr ast.Expr, mustBeStruct bool, pi *loader.PackageInfo) *types.Struct {
-	t := pi.Types[expr].Type
+func argToType(expr ast.Expr, mustBeStruct bool, pi *packages.Package) *types.Struct {
+	t := pi.TypesInfo.Types[expr].Type
 
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()
 	}
 
+	if t == nil {
+		FatalWithExpr(pi, expr, "Argument type not found")
+	}
+
 	s, ok := t.Underlying().(*types.Struct)
 	if !ok && mustBeStruct {
-		FatalWithExpr(expr, "Document parameter should be of struct type, got:")
+		FatalWithExpr(pi, expr, "Document parameter should be of struct type, got:")
 	}
 
 	return s
 }
 
 // returns filter name and filter body parsed from function declaration.
-func parseFilterFunction(name string, fn *ast.FuncDecl, pi *loader.PackageInfo) (string, string) {
+func parseFilterFunction(name string, fn *ast.FuncDecl, pi *packages.Package) (string, string) {
 	log.Debug().Str("name", name).Msg("parsing filter function")
 
 	if fn.Type.Results == nil || len(fn.Type.Results.List) != 1 || fn.Type.Results.List[0].Type.(*ast.Ident).Name != "bool" {
@@ -207,11 +211,14 @@ func parseFilterFunction(name string, fn *ast.FuncDecl, pi *loader.PackageInfo) 
 	}
 
 	var arg0, arg1 string
+
 	var arg0type, arg1type *types.Struct
+
 	if fn.Recv != nil {
 		if len(fn.Recv.List[0].Names) != 1 {
 			util.Fatal("receiver should not be empty")
 		}
+
 		arg0 = fn.Recv.List[0].Names[0].Name
 		arg0type = argToType(fn.Recv.List[0].Type, true, pi)
 

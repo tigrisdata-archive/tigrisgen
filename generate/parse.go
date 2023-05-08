@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package generate
 
 import (
 	"bytes"
@@ -25,12 +25,10 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/expr"
-
-	"github.com/davecgh/go-spew/spew"
 	"github.com/rs/zerolog/log"
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/util"
-	"golang.org/x/tools/go/loader"
+	"github.com/tigrisdata/tigrisgen/expr"
+	"github.com/tigrisdata/tigrisgen/util"
+	"golang.org/x/tools/go/packages"
 )
 
 type funcParser struct {
@@ -38,7 +36,7 @@ type funcParser struct {
 	docType  *types.Struct
 	args     string
 	argsType *types.Struct
-	pi       *loader.PackageInfo
+	pi       *packages.Package
 }
 
 func parseConst(v constant.Value) expr.Operand {
@@ -52,34 +50,39 @@ func parseConst(v constant.Value) expr.Operand {
 		if !ok {
 			util.Fatal("unsupported contant integer value: %v", v.ExactString())
 		}
+
 		return expr.NewOperand(i, expr.Constant)
 	case constant.Float:
 		f, ok := constant.Float64Val(v)
 		if !ok {
 			util.Fatal("unsupported contant integer value: %v", v.ExactString())
 		}
+
 		return expr.NewOperand(f, expr.Constant)
 	default:
 		util.Fatal("unsupported constant value: %v", v.ExactString())
 	}
+
 	return expr.Operand{} // unreachable
 }
 
 func (f *funcParser) parseTrueFalseOnly(e ast.Expr) expr.Expr {
-	if v := f.pi.Types[e].Value; v != nil {
+	if v := f.pi.TypesInfo.Types[e].Value; v != nil {
 		c := parseConst(v)
 		if b, ok := c.Value.(bool); ok {
 			if b {
 				return expr.True
 			}
+
 			return expr.False
 		}
 	}
-	FatalWithExpr(e, "unsupported constant in unary operator")
+
+	FatalWithExpr(f.pi, e, "unsupported constant in unary operator")
 	panic("unsupported constant in unary operator")
 }
 
-// creates field name in the form of path elements from the selector
+// creates field name in the form of path elements from the selector.
 func (f *funcParser) parseSelector(in ast.Expr) (string, []string) {
 	cnt := 0
 	ex := in
@@ -95,7 +98,7 @@ L:
 		case *ast.Ident:
 			break L
 		default:
-			util.Fatal("unknown expr")
+			FatalWithExpr(f.pi, in, "unknown expr in selector")
 		}
 
 		cnt++
@@ -114,8 +117,9 @@ L:
 			if x.Type == expr.Constant {
 				path[cnt] = fmt.Sprintf("%v", x.Value)
 			} else if x.Type == expr.Arg {
-				path[cnt] = fmt.Sprintf("{{.%v}}", x.Value)
+				path[cnt] = fmt.Sprintf("{{.Arg.%v}}", x.Value)
 			}
+
 			in = e.X
 		case *ast.Ident:
 			return e.Name, path
@@ -128,45 +132,56 @@ L:
 // with corresponding field JSON tag, otherwise uses the name as is.
 func toFieldName(tp *types.Struct, path []string) string {
 	var (
-		sb  bytes.Buffer
-		arr bool
+		sb       bytes.Buffer
+		mapOrArr bool
 	)
 
 	for _, f := range path {
 		if tp == nil {
 			util.Fatal("nested field not found: %v, path: %+v", f, path)
 		}
-		if arr {
+
+		if mapOrArr {
 			if sb.Len() != 0 {
 				sb.WriteString(".")
 			}
-			spew.Dump("aaaaaaaaaaaaaaa", f, "bbbbbbbbbbbb")
+
 			sb.WriteString(f)
-			arr = false
+
+			mapOrArr = false
+
 			continue
 		}
+
 		for i := 0; i < tp.NumFields(); i++ {
 			if tp.Field(i).Name() == f {
 				if sb.Len() != 0 {
 					sb.WriteString(".")
 				}
+
 				tag := strings.Split(reflect.StructTag(tp.Tag(i)).Get("json"), ",")
 				if tag[0] != "" {
 					sb.WriteString(tag[0])
 				} else {
 					sb.WriteString(tp.Field(i).Name())
 				}
+
 				if _, ok := tp.Field(i).Type().(*types.Named); ok {
 					tp, _ = tp.Field(i).Type().(*types.Named).Underlying().(*types.Struct)
 				} else if s, ok := tp.Field(i).Type().(*types.Slice); ok {
 					if _, ok = s.Elem().Underlying().(*types.Struct); ok {
 						tp, _ = s.Elem().Underlying().(*types.Struct)
 					}
-					arr = true
+					mapOrArr = true
+				} else if s, ok := tp.Field(i).Type().(*types.Map); ok {
+					if _, ok = s.Elem().Underlying().(*types.Struct); ok {
+						tp, _ = s.Elem().Underlying().(*types.Struct)
+					}
+					mapOrArr = true
 				}
+
 				break
 			}
-			spew.Dump(tp.Field(i).Type())
 		}
 	}
 
@@ -176,7 +191,7 @@ func toFieldName(tp *types.Struct, path []string) string {
 func (f *funcParser) parseOperand(node ast.Expr) expr.Operand {
 	log.Debug().Msg("parse operand")
 
-	if v := f.pi.Types[node].Value; v != nil {
+	if v := f.pi.TypesInfo.Types[node].Value; v != nil {
 		return parseConst(v)
 	}
 
@@ -192,11 +207,11 @@ func (f *funcParser) parseOperand(node ast.Expr) expr.Operand {
 			return expr.NewOperand(toFieldName(f.docType, path), expr.Field)
 		}
 
-		return expr.NewOperand(strings.Join(path, "."), expr.Arg)
+		return expr.NewOperand(strings.Join(path, "."), expr.Arg) // struct arg
 	case *ast.Ident:
 		switch e.Name {
 		case f.args:
-			return expr.NewOperand("", expr.Arg)
+			return expr.NewOperand("", expr.Arg) // simple arg
 		}
 	case *ast.CallExpr:
 		ee := f.parseFuncCall(e)
@@ -205,19 +220,20 @@ func (f *funcParser) parseOperand(node ast.Expr) expr.Operand {
 		}
 	}
 
-	FatalWithExpr(node, "unsupported operand type")
+	FatalWithExpr(f.pi, node, "unsupported operand type")
+
 	return expr.NewOperand(nil, 0) // unreachable
 }
 
 func (f *funcParser) parseUnaryNegation(e ast.Expr) expr.Expr {
-	if v := f.pi.Types[e].Value; v != nil {
+	if v := f.pi.TypesInfo.Types[e].Value; v != nil {
 		return expr.Negate(f.parseTrueFalseOnly(e))
 	}
 
 	switch ee := e.(type) {
 	case *ast.BinaryExpr:
 		return expr.Negate(f.parseBinaryExprLow(ee))
-	case *ast.SelectorExpr:
+	case *ast.SelectorExpr, *ast.IndexExpr:
 		x := f.parseOperand(ee)
 		if x.Type == expr.Field {
 			return expr.NewExpr(expr.Ne, x, expr.NewConstant(true))
@@ -234,53 +250,81 @@ func (f *funcParser) parseUnaryNegation(e ast.Expr) expr.Expr {
 		return expr.Negate(x)
 	}
 
-	FatalWithExpr(e, "unsupported unary operator")
+	FatalWithExpr(f.pi, e, "unsupported unary operator")
+
 	return expr.Expr{} // unreachable
 }
 
 func (f *funcParser) parseFuncCall(e *ast.CallExpr) expr.Expr {
 	log.Debug().Msg("parse func call")
+
 	switch fn := e.Fun.(type) {
 	case *ast.SelectorExpr:
 		s, ok := fn.X.(*ast.Ident)
 		if !ok {
+			if len(e.Args) != 1 {
+				break
+			}
+
+			tt, ok := f.pi.TypesInfo.Types[fn.X].Type.(*types.Named)
+			if ok && tt.String() == "time.Time" {
+				x := f.parseOperand(fn.X)
+				y := f.parseOperand(e.Args[0])
+
+				expr.ValidateOperands(x, y, nil)
+
+				switch fn.Sel.Name {
+				case "After":
+					log.Debug().Str("op", string(expr.Gt)).
+						Interface("x", x.Value).Interface("y", y.Value).Msg("time.After")
+
+					return filterOp(expr.Gt, x, y)
+				case "Before":
+					log.Debug().Str("op", string(expr.Lt)).
+						Interface("x", x.Value).Interface("y", y.Value).Msg("time.After")
+
+					return filterOp(expr.Lt, x, y)
+				case "Equal":
+					log.Debug().Str("op", string(expr.Eq)).
+						Interface("x", x.Value).Interface("y", y.Value).Msg("time.After")
+
+					return filterOp(expr.Eq, x, y)
+				case "Compare":
+					log.Debug().Str("op", "Compare").
+						Interface("x", x.Value).Interface("y", y.Value).Msg("time.After")
+
+					return expr.NewExpr(expr.FuncOp, x, y)
+				}
+			}
+
 			break
 		}
-		if pkg, ok := f.pi.ObjectOf(s).(*types.PkgName); ok {
+
+		if pkg, ok := f.pi.TypesInfo.ObjectOf(s).(*types.PkgName); ok {
 			path := pkg.Imported().Path()
 			switch path {
 			case "strings":
-				switch fn.Sel.Name {
-				case "Contains":
+				if fn.Sel.Name == "Contains" {
 					x := f.parseOperand(e.Args[0])
 					y := f.parseOperand(e.Args[1])
 					expr.ValidateOperands(x, y, nil)
+
 					return filterOp(expr.Contains, x, y)
 				}
 			case "bytes":
-				switch fn.Sel.Name {
-				case "Compare":
+				if fn.Sel.Name == "Compare" {
 					x := f.parseOperand(e.Args[0])
 					y := f.parseOperand(e.Args[1])
 					expr.ValidateOperands(x, y, nil)
-					return expr.NewExpr(expr.FuncOp, x, y)
-				}
-				/*
-					case "time":
-						switch fn.Sel.Name {
-						case "Equal":
-							x := f.parseOperand(e.Args[0])
-							y := f.parseOperand(e.Args[1])
-							expr.ValidateOperands(x, y, nil)
-							return expr.NewExpr(expr.Eq, x, y)
-						}
 
-				*/
-			case "append":
-				x := f.parseOperand(e.Args[0])
-				y := f.parseOperand(e.Args[1])
-				expr.ValidateOperands(x, y, nil)
-				return expr.NewExpr(expr.PushOp, x, y)
+					return expr.NewExpr(expr.FuncOp, x, y) // this is further processed in filterOp
+				}
+			case "time":
+				switch fn.Sel.Name {
+				case "Now":
+					return expr.NewExpr(expr.TimeNow, expr.NewOperand(nil, expr.Func),
+						expr.NewOperand(nil, expr.Func))
+				}
 			}
 		}
 	case *ast.Ident:
@@ -288,13 +332,15 @@ func (f *funcParser) parseFuncCall(e *ast.CallExpr) expr.Expr {
 			x := f.parseOperand(e.Args[0])
 			y := f.parseOperand(e.Args[1])
 			expr.ValidateOperands(x, y, nil)
+
 			if x.Type == expr.Field && (y.Type == expr.Constant || y.Type == expr.Arg) {
-				return expr.NewExpr(expr.FuncOp, x, y)
+				return expr.NewExpr(expr.PushOp, x, y)
 			}
 		}
 	}
 
-	FatalWithExpr(e, "unsupported function call")
+	FatalWithExpr(f.pi, e, "unsupported function call")
+
 	return expr.Expr{}
 }
 
@@ -304,7 +350,11 @@ func filterOp(op expr.Op, x expr.Operand, y expr.Operand) expr.Expr {
 	}
 
 	if y.Type == expr.Field {
-		return expr.Negate(expr.NewExpr(op, y, x))
+		if op != expr.Eq {
+			return expr.Negate(expr.NewExpr(op, y, x))
+		}
+
+		return expr.NewExpr(op, y, x)
 	}
 
 	if x.Type == expr.Func {
@@ -323,44 +373,53 @@ func (f *funcParser) parseBinaryExprLow(node ast.Node) expr.Expr {
 	switch e := node.(type) {
 	case *ast.BinaryExpr:
 		log.Debug().Str("op", e.Op.String()).Msg("parse binary expression")
+
 		switch e.Op {
 		case token.LAND:
 			x := f.parseBinaryExprLow(e.X)
 			y := f.parseBinaryExprLow(e.Y)
+
 			return expr.And(x, y)
 		case token.LOR:
 			x := f.parseBinaryExprLow(e.X)
 			y := f.parseBinaryExprLow(e.Y)
+
 			return expr.Or(x, y)
 		case token.GEQ:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Gte, x, y)
 		case token.LEQ:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Lte, x, y)
 		case token.LSS:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Lt, x, y)
 		case token.GTR:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Gt, x, y)
 		case token.EQL:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Eq, x, y)
 		case token.NEQ:
 			x := f.parseOperand(e.X)
 			y := f.parseOperand(e.Y)
 			expr.ValidateOperands(x, y, e)
+
 			return filterOp(expr.Ne, x, y)
 		default:
 			util.Fatal("unsupported binary op: %v", e.Op.String())
@@ -393,7 +452,7 @@ func (f *funcParser) parseBinaryExprLow(node ast.Node) expr.Expr {
 		return f.parseFuncCall(e)
 	}
 
-	FatalWithExpr(node, "unexpected binary expression")
+	FatalWithExpr(f.pi, node, "unexpected binary expression")
 	panic("unexpected expression")
 }
 
@@ -420,9 +479,11 @@ func (f *funcParser) parseReturnStatement(stmt *ast.ReturnStmt) expr.Expr {
 				if b {
 					return expr.True
 				}
+
 				return expr.False
 			}
 		}
+
 		util.Fatal("unsupported return variable: %+v", e)
 	case *ast.SelectorExpr:
 		x := f.parseOperand(e)
@@ -435,8 +496,10 @@ func (f *funcParser) parseReturnStatement(stmt *ast.ReturnStmt) expr.Expr {
 		if e.Op == token.NOT {
 			return f.parseUnaryNegation(e.X)
 		}
+	case *ast.CallExpr:
+		return f.parseFuncCall(e)
 	default:
-		FatalWithExpr(e, "return should be a logical expression")
+		FatalWithExpr(f.pi, e, "return should be a logical expression")
 	}
 
 	panic("unsupported return statement")
