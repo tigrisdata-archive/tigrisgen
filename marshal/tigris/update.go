@@ -17,39 +17,11 @@ package tigris
 import (
 	"bytes"
 	"encoding/json"
-	"sort"
+	"strings"
 
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/expr"
-	"github.com/tigrisdata/tigris-client-go/tigrisgen/util"
+	"github.com/tigrisdata/tigrisgen/expr"
+	"github.com/tigrisdata/tigrisgen/util"
 )
-
-func marshalUpdateTempl(flt expr.Expr, buf *bytes.Buffer) string {
-	buf.WriteString(string(expr.TemplOps[flt.Type]))
-	buf.WriteString(" ")
-	buf.WriteString(flt.X.Value.(string))
-	buf.WriteString(" ")
-	buf.WriteString("{{")
-	buf.WriteString(flt.Y.Value.(string))
-	buf.WriteString("}}")
-
-	return buf.String()
-}
-
-func marshalUpdateTemplCond(flt expr.Expr) string {
-	b := util.Must(json.Marshal(flt.Y))
-
-	var buf bytes.Buffer
-	buf.WriteString("{{if ")
-	buf.WriteString(string(expr.TemplOps[flt.Type]))
-	buf.WriteString(" ")
-	buf.WriteString(flt.X.Value.(string))
-	buf.WriteString(" ")
-	buf.WriteString(string(b))
-	buf.WriteString("}}")
-
-	return buf.String()
-
-}
 
 func marshalUpdateExpr(upd expr.Expr, buf *bytes.Buffer) {
 	n := util.Must(json.Marshal(upd.X.Value))
@@ -57,61 +29,141 @@ func marshalUpdateExpr(upd expr.Expr, buf *bytes.Buffer) {
 
 	buf.Write(n)
 	buf.WriteString(`:`)
+
 	if upd.Y.Type == expr.Arg {
-		buf.WriteString("{{.")
-		buf.WriteString(upd.Y.Value.(string))
+		if s, ok := upd.Y.Value.(string); ok && strings.HasPrefix(s, "{{") {
+			buf.WriteString(s)
+			return
+		}
+
+		buf.WriteString("{{toJSON .Arg")
+
+		if upd.Y.Value.(string) != "" {
+			buf.WriteString(".")
+			buf.WriteString(upd.Y.Value.(string))
+		}
+
 		buf.WriteString("}}")
 	} else {
 		buf.Write(v)
 	}
 }
 
-func marshalUpdateLow(upd []expr.Expr, buf *bytes.Buffer) {
-	group := make(map[expr.Op][]expr.Expr)
+func marshalTmplExpr(flt expr.Expr, buf *bytes.Buffer) {
+	if flt.Type == expr.OrOp || flt.Type == expr.AndOp {
+		if len(flt.ListClient) > 1 {
+			buf.WriteString(string(expr.TemplOps[flt.Type]))
 
-	// group by op type
-	for _, v := range upd {
-		/*
-			if v.Type == expr.AndOp {
-				for kk, vv := range v.List {
-
-				}
+			for _, vv := range flt.ListClient {
+				buf.WriteString(" ")
+				buf.WriteString("( ")
+				marshalTmplExpr(vv, buf)
+				buf.WriteString(" )")
 			}
-		*/
-
-		group[v.Type] = append(group[v.Type], v)
-	}
-
-	keys := make([]string, 0)
-	for k := range group {
-		keys = append(keys, string(k))
-	}
-
-	sort.Strings(keys)
-
-	buf.WriteString(`{`)
-	i := 0
-	for _, k := range keys {
-		ops := group[expr.Op(k)]
-		if i > 0 {
-			buf.WriteString(`,`)
+		} else {
+			marshalTmplCondLow(flt.ListClient[0], buf)
 		}
+	} else {
+		marshalTmplCondLow(flt, buf)
+	}
+}
 
-		buf.WriteString(`"`)
-		buf.WriteString(k)
-		buf.WriteString(`":{`)
+func marshalCommaCond(conds []expr.Expr, buf *bytes.Buffer) {
+	buf.WriteString("{{ if ")
 
-		for kk, vv := range ops {
-			if kk > 0 {
-				buf.WriteString(",")
+	if len(conds) > 1 {
+		buf.WriteString(string(expr.TemplOps[expr.OrOp]))
+
+		for _, v := range conds {
+			buf.WriteString(" ")
+			buf.WriteString("( ")
+			marshalTmplExpr(v, buf)
+			buf.WriteString(" )")
+		}
+	} else {
+		marshalTmplExpr(conds[0], buf)
+	}
+
+	buf.WriteString(" }}")
+}
+
+func marshalUpdateOp(op expr.Op, upd []expr.Expr, buf *bytes.Buffer) {
+	i := 0
+	firstNonOptional := true
+
+	var nonEmptyConds []expr.Expr
+
+	for _, vv := range upd {
+		if vv.Type == op {
+			if i > 0 {
+				if firstNonOptional {
+					marshalCommaCond(nonEmptyConds, buf)
+					buf.WriteString(`,`)
+					buf.WriteString(`{{end}}`)
+				} else {
+					buf.WriteString(`,`)
+				}
 			}
 
 			marshalUpdateExpr(vv, buf)
-		}
-		buf.WriteString(`}`)
 
-		i++
+			i++
+
+			firstNonOptional = false
+		} else if vv.Type == expr.UpdIfOp {
+			var opBuf bytes.Buffer
+
+			marshalUpdateOp(op, vv.List, &opBuf)
+
+			if opBuf.Len() > 0 {
+				if firstNonOptional {
+					nonEmptyConds = append(nonEmptyConds, vv.ListClient[0])
+				}
+
+				buf.WriteString(`{{ if `)
+				marshalTmplExpr(vv.ListClient[0], buf)
+				buf.WriteString(` }}`)
+
+				if i > 0 {
+					buf.WriteString(`,`)
+				}
+
+				buf.Write(opBuf.Bytes())
+
+				buf.WriteString(`{{end}}`)
+				i++
+			}
+		}
 	}
+}
+
+func marshalUpdateLow(upd []expr.Expr, buf *bytes.Buffer) {
+	buf.WriteString(`{`)
+
+	prev := false
+
+	for _, v := range expr.UpdOps {
+		var opBuf bytes.Buffer
+
+		marshalUpdateOp(v, upd, &opBuf)
+
+		if opBuf.Len() > 0 {
+			if prev {
+				buf.WriteString(`,`)
+			}
+
+			buf.WriteString(`"`)
+			buf.WriteString(string(v))
+			buf.WriteString(`":{`)
+
+			buf.Write(opBuf.Bytes())
+
+			buf.WriteString(`}`)
+
+			prev = true
+		}
+	}
+
 	buf.WriteString(`}`)
 }
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package generate
 
 import (
 	_ "embed"
@@ -35,6 +35,7 @@ type vars struct {
 	Package string
 	Filters []FilterDef
 	Updates []FilterDef
+	Cmdline string
 }
 
 func writeGenFileLow(w io.Writer, pkg string, filters []FilterDef, updates []FilterDef) error {
@@ -47,6 +48,7 @@ func writeGenFileLow(w io.Writer, pkg string, filters []FilterDef, updates []Fil
 		Package: pkg,
 		Filters: filters,
 		Updates: updates,
+		Cmdline: "tigrisgen",
 	}
 
 	return t.Execute(w, v)
