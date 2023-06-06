@@ -28,7 +28,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-const tigrisPkg = "github.com/tigrisdata/tigris-client-go/tigris"
+var tigrisPkg = "github.com/tigrisdata/tigris-client-go/tigris"
 
 // Program source loaded into memory.
 var Program = map[string]*packages.Package{}
@@ -53,27 +53,6 @@ func getFilterFunc(name string, pi *packages.Package, ident ast.Expr, flt ast.Ex
 
 	return filtersFNs, updatesFNs
 }
-
-/*
-func findMethods(node *ast.File, pi *loader.PackageInfo) map[string]*ast.FuncDecl {
-	res := make(map[string]*ast.FuncDecl)
-
-	ast.Inspect(node, func(n ast.Node) bool {
-		if fun, ok := n.(*ast.FuncDecl); ok {
-			if fun.Recv != nil && len(fun.Recv.List) == 1 {
-				if r, rok := fun.Recv.List[0].Type.(*ast.StarExpr); rok {
-					res[r.X.(*ast.Ident).Name+"."+fun.Name.Name] = fun
-				} else if r, rok := fun.Recv.List[0].Type.(*ast.Ident); rok {
-					res[r.Name+"."+fun.Name.Name] = fun
-				}
-			}
-		}
-		return true
-	})
-
-	return res
-}
-*/
 
 func findAPIcalls(node *ast.File, pi *packages.Package, apiName string) ([]ast.Expr, []ast.Expr) {
 	filtersFNs := make([]ast.Expr, 0)

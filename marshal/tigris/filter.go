@@ -34,7 +34,7 @@ func marshalTmplCondLow(flt expr.Expr, buf *bytes.Buffer) {
 	}
 
 	buf.WriteString(" ")
-	buf.WriteString(string(b))
+	buf.Write(b)
 }
 
 func marshalTmplCond(flt expr.Expr, buf *bytes.Buffer) {
@@ -50,7 +50,7 @@ func marshalTmplCond(flt expr.Expr, buf *bytes.Buffer) {
 	}
 
 	buf.WriteString(" ")
-	buf.WriteString(string(b))
+	buf.Write(b)
 	buf.WriteString(" }}")
 }
 

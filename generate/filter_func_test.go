@@ -29,7 +29,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tigrisdata/tigris-client-go/tigris"
 	"github.com/tigrisdata/tigrisgen/test"
 	"github.com/tigrisdata/tigrisgen/util"
 	"golang.org/x/tools/go/packages"
@@ -120,6 +119,8 @@ func TestAPILookup(t *testing.T) {
 	s, _ := os.Getwd()
 	log.Debug().Strs("args", os.Args).Str("pwd", s).Msg("Starting")
 
+	tigrisPkg = "github.com/tigrisdata/tigrisgen/test"
+
 	loadProgram(Program, []string{"."})
 
 	for _, pi := range Program {
@@ -173,26 +174,19 @@ func TestAPILookup(t *testing.T) {
 func UpdateAPICalls() {
 	ctx := context.TODO()
 
-	db, err := tigris.OpenDatabase(ctx, &tigris.Config{URL: "localhost:8081"})
-	if err != nil {
-		panic(err)
-	}
+	c := &test.NativeCollection[test.Doc, test.Doc]{}
+	c1 := &test.NativeCollection[Doc, Doc]{}
 
-	c := tigris.GetNativeCollection[test.Doc](db)
-	c1 := tigris.GetNativeCollection[Doc](db)
+	_, _ = test.Update(ctx, c, test.FilterOne, test.UpdateOne, 1.23, 10)
+	_, _ = test.Update(ctx, c1, FilterOne, UpdateOne, 1.24, Args{})
 
-	_, _ = tigris.Update(ctx, c, test.FilterOne, test.UpdateOne, 1.23, 10)
-	_, _ = tigris.Update(ctx, c1, FilterOne, UpdateOne, 1.24, Args{})
+	_, _ = test.Update(ctx, c1, Doc.FilterOne, Doc.UpdateOne, 1.24, 10)
+	_, _ = test.Update(ctx, c, test.Doc.FilterOne, test.Doc.UpdateOne, 1.23, 10)
+	_, _ = test.UpdateOneAPI(ctx, c1, FilterOne, UpdateOne, 1.24, Args{ArgInt: 1})
 
-	_, _ = tigris.Update(ctx, c1, Doc.FilterOne, Doc.UpdateOne, 1.24, 10)
-	_, _ = tigris.Update(ctx, c, test.Doc.FilterOne, test.Doc.UpdateOne, 1.23, 10)
-	_, _ = tigris.UpdateOne(ctx, c1, FilterOne, UpdateOne, 1.24, Args{ArgInt: 1})
-	_, _ = tigris.UpdateAll(ctx, c, test.Doc.UpdateOne, 10)
-
-	_, _ = tigris.Read(ctx, c1, FilterOne, 1.24)
-	_, _ = tigris.ReadOne(ctx, c1, FilterOne, 1.24)
-	_, _ = tigris.ReadAll(ctx, c1)
-	_, _ = tigris.ReadWithOptions(ctx, c1, FilterOne, 1.24, &tigris.ReadOptions{Limit: 10})
+	_, _ = test.Read(ctx, c1, FilterOne, 1.24)
+	_, _ = test.ReadOne(ctx, c1, FilterOne, 1.24)
+	_, _ = test.ReadWithOptions(ctx, c1, FilterOne, 1.24, nil)
 
 	/*
 		_, _ = tigris.Update[Doc, Args, int](ctx, c1,
@@ -205,9 +199,8 @@ func UpdateAPICalls() {
 			Args{ArgInt: 10}, 10)
 	*/
 
-	_, _ = tigris.Delete(ctx, c1, FilterOne, 1.24)
-	_, _ = tigris.DeleteOne(ctx, c1, FilterOne, 1.24)
-	_, _ = tigris.DeleteAll(ctx, c1)
+	_, _ = test.Delete(ctx, c1, FilterOne, 1.24)
+	_, _ = test.DeleteOne(ctx, c1, FilterOne, 1.24)
 }
 
 // fix `unused` lint so as functions are only parsed by the tests.

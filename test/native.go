@@ -14,6 +14,8 @@
 
 package test
 
+import "context"
+
 // For out package native API tests
 // See tigris.TestNativeAPI
 
@@ -73,3 +75,52 @@ func (d *Doc) UpdateOnePtr(args int) {
 	d.Field1 += args
 }
 */
+
+type NativeCollection[T any, P any] struct{}
+
+type Response struct{}
+
+// Below is for API lookup test.
+func Update[T, P any, F any, U any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool,
+	update func(T, U), args F, uargs U,
+) (*Response, error) {
+	return &Response{}, nil
+}
+
+// UpdateOne partially updates first document matching the filter.
+func UpdateOneAPI[T, P any, F any, U any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool,
+	update func(T, U), args F, uargs U,
+) (*Response, error) {
+	return &Response{}, nil
+}
+
+// Read returns documents which satisfies the filter.
+func Read[T, P any, F any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool, args F,
+) (*Response, error) {
+	return &Response{}, nil
+}
+
+// ReadOne reads one document from the collection satisfying the filter.
+func ReadOne[T, P any, F any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool, args F,
+) (*P, error) {
+	var p P
+	return &p, nil
+}
+
+func ReadWithOptions[T, P any, F any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool, args F,
+	options *Response,
+) (*Response, error) {
+	return &Response{}, nil
+}
+
+// Delete removes documents from the collection according to the filter.
+func Delete[T, P any, F any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool, args F,
+) (*Response, error) {
+	return &Response{}, nil
+}
+
+// DeleteOne deletes first document satisfying the filter.
+func DeleteOne[T, P any, F any](ctx context.Context, c *NativeCollection[T, P], filter func(T, F) bool, args F,
+) (*Response, error) {
+	return &Response{}, nil
+}
