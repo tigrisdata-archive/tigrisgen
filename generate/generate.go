@@ -18,6 +18,7 @@ import (
 	_ "embed"
 	"io"
 	"os"
+	"strings"
 	"text/template"
 
 	"github.com/rs/zerolog/log"
@@ -61,6 +62,8 @@ func writeGenFile(name string, pkg string, filters []FilterDef, updates []Filter
 	if err != nil {
 		return err
 	}
+
+	pkg = strings.TrimSuffix(pkg, "_test")
 
 	if err = writeGenFileLow(f, pkg, filters, updates); err != nil {
 		_ = f.Close()

@@ -17,6 +17,7 @@ package generate
 import (
 	"go/ast"
 	"go/types"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tigrisdata/tigrisgen/util"
@@ -109,7 +110,15 @@ func exprToFuncDecl(tp string, f ast.Expr, pi *packages.Package) (string, *ast.F
 	case *ast.Ident: // function
 		if a.Obj != nil && a.Obj.Kind == ast.Fun {
 			log.Debug().Str("API", tp).Str("name", a.Name).Int("pos", int(a.Pos())).Msg("detected simple function")
-			return pi.Name + "." + a.Name, a.Obj.Decl.(*ast.FuncDecl), pi
+
+			p := strings.TrimPrefix(Pwd, pi.Module.Dir)
+			if p != "" {
+				p = pi.Module.Path + p + "."
+			} else {
+				p = pi.Name + "."
+			}
+
+			return p + a.Name, a.Obj.Decl.(*ast.FuncDecl), pi
 		}
 	case *ast.SelectorExpr:
 		if s, ok := a.X.(*ast.Ident); ok { // method or external package function
@@ -152,6 +161,7 @@ func exprToFuncDecl(tp string, f ast.Expr, pi *packages.Package) (string, *ast.F
 				if !ok {
 					util.Fatal("not a signature type: %v", fn.Type())
 				}
+
 				path := pkg.Imported().Path()
 				log.Debug().Str("API", tp).Str("name", sig.String()).Str("package", path).
 					Msg("detected external package document method")

@@ -31,7 +31,10 @@ import (
 var tigrisPkg = "github.com/tigrisdata/tigris-client-go/tigris"
 
 // Program source loaded into memory.
-var Program = map[string]*packages.Package{}
+var (
+	Program = map[string]*packages.Package{}
+	Pwd     string
+)
 
 func getFilterFunc(name string, pi *packages.Package, ident ast.Expr, flt ast.Expr, upd ast.Expr, filtersFNs []ast.Expr,
 	updatesFNs []ast.Expr,
@@ -105,7 +108,8 @@ func findAPIcalls(node *ast.File, pi *packages.Package, apiName string) ([]ast.E
 func loadProgram(program map[string]*packages.Package, args []string) {
 	start := time.Now()
 
-	cfg := packages.Config{Tests: true, Mode: packages.NeedName | packages.NeedDeps | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo}
+	cfg := packages.Config{Tests: true, Mode: packages.NeedName | packages.NeedDeps | packages.NeedSyntax |
+		packages.NeedTypes | packages.NeedTypesInfo | packages.NeedModule}
 
 	pkgs, err := packages.Load(&cfg, args...)
 	if err != nil {
@@ -113,7 +117,7 @@ func loadProgram(program map[string]*packages.Package, args []string) {
 	}
 
 	for _, v := range pkgs {
-		log.Info().Str("id", v.ID).Msg("loading package")
+		log.Info().Str("id", v.ID).Str("path", v.PkgPath).Str("name", v.Name).Msg("loading package")
 		program[v.ID] = v
 	}
 
@@ -132,30 +136,36 @@ func findAndParseAPI(api string, f *ast.File, pi *packages.Package,
 
 	flt, u := findAPIcalls(f, pi, api)
 
-	for _, ff := range flt {
-		name, body, pi := exprToFuncDecl(api, ff, pi)
-		if body != nil {
-			if fltName[name] {
-				log.Debug().Str("name", name).Msg("skipping duplicate filter")
-				continue
-			}
+	if api != "UpdateAll" {
+		for _, ff := range flt {
+			name, body, pi := exprToFuncDecl(api, ff, pi)
+			if body != nil {
+				if fltName[name] {
+					log.Debug().Str("name", name).Msg("skipping duplicate filter")
+					continue
+				}
 
-			fltName[name] = true
-			n, flt := parseFilterFunction(name, body, pi)
-			log.Info().Str("name", n).Str("filter", flt).Msg("filter")
-			filters = append(filters, FilterDef{n, flt})
-		} else {
-			log.Warn().Str("package", pi.Name).Str("expr",
-				reflect.TypeOf(ff).Name()).Msg("not a filter function")
+				fltName[name] = true
+				n, flt := parseFilterFunction(name, body, pi)
+				log.Info().Str("name", n).Str("filter", flt).Msg("filter")
+				filters = append(filters, FilterDef{n, flt})
+			} else {
+				log.Warn().Str("package", pi.Name).Str("expr",
+					reflect.TypeOf(ff).Name()).Msg("not a filter function")
+			}
 		}
 	}
 
-	if api != "Update" {
+	if api != "Update" && api != "UpdateOne" && api != "UpdateAll" {
 		return filters, updates
 	}
 
+	if api == "UpdateAll" {
+		u = flt
+	}
+
 	for _, ff := range u {
-		name, body, pi := exprToFuncDecl("Update", ff, pi)
+		name, body, pi := exprToFuncDecl(api, ff, pi)
 		if body != nil {
 			if updName[name] {
 				log.Debug().Str("name", name).Msg("skipping duplicate update")
@@ -187,12 +197,14 @@ func findAndParse(pi *packages.Package) ([]FilterDef, []FilterDef) {
 
 	log.Debug().Str("package", pi.Name).Msg("processing package")
 
+	apis := []string{"Update", "UpdateOne", "UpdateAll", "Read", "ReadOne", "ReadWithOptions", "Delete", "DeleteOne"}
+
 	for _, f := range pi.Syntax {
 		log.Debug().Str("file", pi.Fset.File(f.Pos()).Name()).Msg("processing file")
 
-		filters, updates = findAndParseAPI("Update", f, pi, filters, updates, fltName, updName)
-		filters, updates = findAndParseAPI("Read", f, pi, filters, updates, fltName, updName)
-		filters, updates = findAndParseAPI("Delete", f, pi, filters, updates, fltName, updName)
+		for _, v := range apis {
+			filters, updates = findAndParseAPI(v, f, pi, filters, updates, fltName, updName)
+		}
 	}
 
 	return filters, updates
@@ -204,19 +216,30 @@ func MainLow() {
 	s, _ := os.Getwd()
 	log.Debug().Strs("args", os.Args).Str("pwd", s).Msg("Starting")
 
-	args := []string{os.Getenv("GOFILE")}
-	if len(os.Args) >= 2 {
-		args = os.Args
+	var err error
+
+	Pwd, err = os.Getwd()
+	if err != nil {
+		util.Fatal("%v", err)
 	}
 
-	loadProgram(Program, args)
+	loadProgram(Program, []string{Pwd})
 
 	for _, pi := range Program {
+		if pi.Name != os.Getenv("GOPACKAGE") {
+			continue
+		}
+
 		log.Debug().Str("package", pi.Name).Msg("processing")
 
 		flts, upds := findAndParse(pi)
 
-		//		log.Debug().Interface("filters", flts).Interface("updates", upds).Msg("parsed")
+		if len(flts) == 0 && len(upds) == 0 {
+			log.Debug().Msg("No filters or updates found in package")
+			continue
+		}
+
+		log.Debug().Interface("filters", flts).Interface("updates", upds).Msg("parsed")
 
 		err := writeGenFile("tigris.gen.go", pi.Name, flts, upds)
 		if err != nil {
